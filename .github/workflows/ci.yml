@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: [11, 17, 21]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Compile with Java 11 API level
+        run: |
+          rm -rf build/classes
+          mkdir -p build/classes
+          find src -name '*.java' -print0 | xargs -0 javac --release 11 -d build/classes
+      - name: Run tests
+        run: java -cp build/classes multipath.ResilienceEngineTest
