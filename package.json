@@ -1,9 +1,9 @@
 {
-  "name": "omniformat-ai-studio-max",
-  "version": "1.0.0",
+  "name": "nexus-ai-universal-studio",
+  "version": "0.1.0-alpha",
   "private": true,
   "type": "module",
-  "description": "OmniFormat AI Studio Max — zero-dependency full-stack AI studio (OpenAI, Gemini, Veo) with plans, credit wallets, billing and a glassmorphism UI.",
+  "description": "NEXUS AI UNIVERSAL STUDIO — zero-dependency AI Creative Operating System (OpenAI, Gemini, Veo) with plans, credit wallets, billing and a glassmorphism UI.",
   "engines": {
     "node": ">=18"
   },

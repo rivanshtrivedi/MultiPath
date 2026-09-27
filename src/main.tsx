@@ -1,5 +1,5 @@
 /**
- * OmniFormat AI Studio Max — minimal Vite-style shell mount.
+ * NEXUS AI UNIVERSAL STUDIO — minimal Vite-style shell mount.
  *
  * The real application (glassmorphism SPA) is served inline by server.mjs.
  * This module is the static-shell title page: it verifies the mount point
@@ -12,14 +12,14 @@ function mountShell(): void {
   const root = document.getElementById("root") as ShellRoot | null;
   if (!root) return;
 
-  root.dataset.omniformatShell = "mounted";
+  root.dataset.nexusShell = "mounted";
   root.innerHTML = `
-    <main class="omni-shell">
-      <span class="omni-shell__badge">AI Studio Max</span>
-      <h1 class="omni-shell__title">OmniFormat</h1>
+    <main class="nexus-shell">
+      <span class="omni-shell__badge">by Rivansh Trivedi</span>
+      <h1 class="omni-shell__title">NEXUS</h1>
       <p class="omni-shell__sub">
-        Text · Image · Video generation studio — plans, credit wallets and billing,
-        in one zero-dependency server.
+        The AI Creative Operating System — studios for text, image and video with plans,
+        credit wallets and billing, in one zero-dependency server.
       </p>
       <a class="omni-shell__cta" href="/">Enter the Studio →</a>
     </main>`;

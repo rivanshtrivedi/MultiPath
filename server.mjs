@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * OmniFormat AI Studio Max — single-file, zero-dependency full-stack AI studio.
+ * NEXUS AI UNIVERSAL STUDIO — single-file, zero-dependency creative OS (v0.1 Alpha, by Rivansh Trivedi).
  *
  * Backend  : Node built-ins only (http, crypto, fs, fetch).
  * Frontend : inline glassmorphism SPA served from the SPA_HTML template below.
@@ -28,6 +28,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash";
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
 const VEO_MODEL = process.env.VEO_MODEL || "veo-3.1-generate-preview";
+const VEO_CREDIT_COST = 10;
+const VEO_FREE_MAX_SECONDS = 120; // Free plan: one video, up to 2 minutes
+const VEO_PAID_MAX_SECONDS = 300; // Go/Pro/VIP: up to 5 minutes
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -52,25 +55,29 @@ const STRIPE_API = "https://api.stripe.com/v1";
 const PLANS = {
   free: {
     key: "free", name: "Free", price: 0, tagline: "Kick the tires",
-    wallet: { ai: 20, image: 5, veo: 0 },
+    wallet: { ai: 20, image: 5, veo: 10 },
+    maxVideoSeconds: VEO_FREE_MAX_SECONDS, videoLabel: "one video, up to 2 min",
     maxPrompt: 2_000, maxOutput: 1_024,
-    features: ["Auto provider routing (OpenAI first)", "Text + image basics", "Community limits"],
+    features: ["Auto provider routing (OpenAI first)", "Text + image basics", "One video, up to 2 minutes", "Community limits"],
   },
   go: {
     key: "go", name: "Go", price: 5, tagline: "Gemini + Veo starter",
-    wallet: { ai: 200, image: 60, veo: 20 },
+    wallet: { ai: 200, image: 60, veo: 200 },
+    maxVideoSeconds: VEO_PAID_MAX_SECONDS, videoLabel: "up to 5 min videos",
     maxPrompt: 8_000, maxOutput: 2_048,
     features: ["Everything in Free", "Gemini 3.8 Flash text", "Gemini 3.1 Flash Image", "Veo 3.1 video starter"],
   },
   pro: {
     key: "pro", name: "Pro", price: 15, tagline: "All providers, all tools",
-    wallet: { ai: 800, image: 250, veo: 60 },
+    wallet: { ai: 800, image: 250, veo: 600 },
+    maxVideoSeconds: VEO_PAID_MAX_SECONDS, videoLabel: "up to 5 min videos",
     maxPrompt: 16_000, maxOutput: 4_096,
     features: ["Everything in Go", "All providers unlocked", "GPT-Image-2", "Higher rate limits"],
   },
   vip: {
     key: "vip", name: "VIP", price: 17, tagline: "Highest limits",
-    wallet: { ai: 3000, image: 1000, veo: 300 },
+    wallet: { ai: 3000, image: 1000, veo: 3000 },
+    maxVideoSeconds: VEO_PAID_MAX_SECONDS, videoLabel: "up to 5 min videos",
     maxPrompt: 32_000, maxOutput: 8_192,
     features: ["Everything in Pro", "Highest credit wallets", "Priority fallbacks", "Longest outputs"],
   },
@@ -83,8 +90,11 @@ function planAllowsProvider(planKey, provider) {
   if (provider === "gemini") return p !== "free";
   return false;
 }
-function planAllowsVeo(planKey) {
-  return (PLANS[planKey] ? planKey : "free") !== "free";
+function planAllowsVeo(planKey, seconds) {
+  const p = PLANS[planKey] || PLANS.free;
+  const max = p.maxVideoSeconds || VEO_FREE_MAX_SECONDS;
+  if (!(seconds > 0)) return (p.wallet && p.wallet.veo) > 0;
+  return seconds <= max;
 }
 
 /* ══════════════════════════ 3. Tiny JSON store ═════════════════════════ */
@@ -424,7 +434,7 @@ async function veoStart({ prompt, seconds }) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         instances: [{ prompt }],
-        parameters: { durationSeconds: Math.min(Math.max(seconds || 8, 4), 8) },
+        parameters: { durationSeconds: Math.min(Math.max(seconds || 8, 4), VEO_PAID_MAX_SECONDS) },
       }),
     },
     120_000,
@@ -603,21 +613,23 @@ const veoOps = new Map(); // localId → { opName, email, plan, prompt, status, 
 function publicSettings(origin) {
   return {
     ok: true,
-    app: "OmniFormat AI Studio Max",
-    version: "1.0.0",
+    app: "NEXUS AI UNIVERSAL STUDIO",
+    version: "0.1 Alpha",
+    creator: "Rivansh Trivedi",
     devAuth: DEV_AUTH,
     devBilling: DEV_BILLING,
     billingMode: stripeConfigured ? "stripe" : "dev",
-    vipCodeEnabled: DEV_BILLING,
+    accessCodeEnabled: DEV_BILLING,
+    videoLimits: { freeMaxSeconds: VEO_FREE_MAX_SECONDS, paidMaxSeconds: VEO_PAID_MAX_SECONDS, freeVideos: 1, costPerVideo: VEO_CREDIT_COST },
     google: { enabled: Boolean(GOOGLE_CLIENT_ID) },
     providers: {
       openai: { configured: Boolean(OPENAI_API_KEY), textModel: OPENAI_TEXT_MODEL, imageModel: OPENAI_IMAGE_MODEL },
       gemini: { configured: Boolean(GEMINI_API_KEY), textModel: GEMINI_TEXT_MODEL, imageModel: GEMINI_IMAGE_MODEL },
-      veo: { configured: Boolean(GEMINI_API_KEY), model: VEO_MODEL, cost: 10 },
+      veo: { configured: Boolean(GEMINI_API_KEY), model: VEO_MODEL, cost: VEO_CREDIT_COST },
     },
     plans: Object.values(PLANS).map((p) => ({
       key: p.key, name: p.name, price: p.price, tagline: p.tagline, features: p.features,
-      wallet: p.wallet,
+      wallet: p.wallet, maxVideoSeconds: p.maxVideoSeconds, videoLabel: p.videoLabel,
     })),
     origin,
   };
@@ -735,16 +747,17 @@ async function handleApi(req, res, pathname, query, origin) {
   if (!authed) return sendError(res, 401, "Sign in required.");
 
   /* ---- dev VIP unlock ---- */
-  if (method === "POST" && pathname === "/api/dev/unlock-vip") {
-    if (!DEV_BILLING) return sendError(res, 403, "VIP access codes are disabled when Stripe billing is active.");
+  if (method === "POST" && pathname === "/api/access/unlock") {
+    if (!DEV_BILLING) return sendError(res, 403, "Access codes are disabled when Stripe billing is active.");
     const body = await readJSON(req);
-    if (!safeEqual(String(body.code || ""), VIP_ACCESS_CODE)) return sendError(res, 403, "Invalid VIP access code.");
-    user.plan = "vip";
+    if (!safeEqual(String(body.code || ""), VIP_ACCESS_CODE)) return sendError(res, 403, "Invalid access code.");
+    const planKey = ["go", "pro", "vip"].includes(body.plan) ? body.plan : "pro";
+    user.plan = planKey;
     saveJSON(USERS_FILE, users);
     const u = ensureUsage(user.email);
-    const wallet = PLANS.vip.wallet;
+    const wallet = (PLANS[planKey] || PLANS.free).wallet;
     for (const k of ["ai", "image", "veo"]) u.credits[k] = Math.max(u.credits[k], wallet[k]);
-    return sendJSON(res, 200, { ok: true, user: publicMe(user) });
+    return sendJSON(res, 200, { ok: true, plan: planKey, user: publicMe(user) });
   }
 
   /* ---- text generation ---- */
@@ -811,12 +824,17 @@ async function handleApi(req, res, pathname, query, origin) {
     const body = await readJSON(req);
     const prompt = String(body.prompt || "").trim();
     if (!prompt) return sendError(res, 400, "Prompt is required.");
-    if (!planAllowsVeo(user.plan)) {
-      return sendError(res, 402, "Veo video generation is not in your " + (PLANS[user.plan]?.name || "Free") + " plan. Upgrade to Go, Pro or VIP.");
+    const seconds = Math.min(Math.max(Number(body.seconds) || 8, 4), VEO_PAID_MAX_SECONDS);
+    const maxSec = (PLANS[user.plan] || PLANS.free).maxVideoSeconds || VEO_FREE_MAX_SECONDS;
+    if (!planAllowsVeo(user.plan, seconds)) {
+      if (seconds > maxSec) {
+        return sendError(res, 402, "Your " + (PLANS[user.plan]?.name || "Free") + " plan allows videos up to " + Math.round(maxSec / 60) + " minutes. Upgrade to Go, Pro or VIP for up to 5 minute videos.");
+      }
+      return sendError(res, 402, "No Veo credits left on your plan. Upgrade to keep generating video.");
     }
-    spendCredit(user.email, "veo", 10);
+    spendCredit(user.email, "veo", VEO_CREDIT_COST);
     try {
-      const opName = await veoStart({ prompt, seconds: body.seconds });
+      const opName = await veoStart({ prompt, seconds });
       const localId = "veo_" + crypto.randomBytes(8).toString("hex");
       veoOps.set(localId, {
         opName, email: user.email, prompt, status: "running",
@@ -977,8 +995,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log("");
-  console.log("  ✦ OmniFormat AI Studio Max");
-  console.log("    http://localhost:" + PORT + "   (bound to " + HOST + ")");
+  console.log("  ✦ NEXUS AI UNIVERSAL STUDIO");
+  console.log("    http://localhost:" + PORT + "   (bound to " + HOST + ") · v0.1 Alpha · by Rivansh Trivedi · v0.1 Alpha · by Rivansh Trivedi");
   console.log("    providers: openai " + (OPENAI_API_KEY ? "✓" : "—") + "  gemini " + (GEMINI_API_KEY ? "✓" : "—") + "  veo " + (GEMINI_API_KEY ? "✓" : "—"));
   console.log("    billing: " + (stripeConfigured ? "stripe" : "dev simulation") + "   auth: " + (DEV_AUTH ? "dev sessions" : "google oauth"));
   console.log("    data dir: " + DATA_DIR);
@@ -1000,7 +1018,7 @@ const SPA_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <meta name="referrer" content="no-referrer"/>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; media-src 'self' blob: data:; frame-src 'self' data: blob:; font-src 'self' data:"/>
-<title>OmniFormat AI Studio Max</title>
+<title>NEXUS AI UNIVERSAL STUDIO</title>
 <meta name="description" content="Zero-dependency AI studio: text, image and video generation with plans, credit wallets and billing."/>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23818cf8'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='56' height='56' rx='16' fill='%230b1020'/%3E%3Cpath d='M18 40 L32 16 L46 40 Z' fill='url(%23g)'/%3E%3Ccircle cx='32' cy='45' r='5' fill='url(%23g)'/%3E%3C/svg%3E"/>
 <style>
@@ -1140,6 +1158,13 @@ select option{background:#0b1020;color:var(--text)}
 .stat{padding:14px;border-radius:14px;background:var(--glass);border:1px solid var(--border)}
 .stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
 .stat span{font-size:11px;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;font-weight:700}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.pal{position:fixed;inset:0;z-index:70;background:rgba(3,5,10,.65);backdrop-filter:blur(6px);display:grid;place-items:start center;padding-top:12vh}
+.pal.hidden{display:none}
+.pal .sheet{width:min(560px,92vw);padding:12px}
+.pal input{margin-bottom:8px}
+.pal .cmd{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;border-radius:10px;border:none;background:none;color:var(--text);font-size:14px;cursor:pointer;text-align:left;font-family:inherit}
+.pal .cmd:hover{background:var(--glass2)}
 /* mobile bottom nav */
 .bottomnav{display:none}
 @media (max-width:880px){
@@ -1197,6 +1222,7 @@ function refreshMotion(){
 
 /* ── nav model ─────────────────────────────────────────── */
 var NAV=[
+ {k:"dashboard",ic:"◈", label:"Dashboard"},
  {k:"chat",   ic:"✦", label:"Smart Merge"},
  {k:"doc",    ic:"📄", label:"Document"},
  {k:"research",ic:"🔬", label:"Research"},
@@ -1212,7 +1238,16 @@ function planAllowsProvider(p){
   if(p==="gemini") return S.me.plan!=="free";
   return false;
 }
-function planAllowsVeo(){ return S.me && S.me.plan!=="free"; }
+function currentPlan(){
+  var plans=(S.settings&&S.settings.plans)||[];
+  for(var i=0;i<plans.length;i++){ if(plans[i].key===(S.me&&S.me.plan)) return plans[i]; }
+  return {key:"free",name:"Free",wallet:{ai:20,image:5,veo:1},maxVideoSeconds:120};
+}
+function planAllowsVeo(seconds){
+  if(!S.me) return false;
+  if(seconds&&seconds>0) return seconds<=(currentPlan().maxVideoSeconds||120);
+  return S.me.credits.veo>0;
+}
 function providerOptions(sel){
   var opts=[["auto","Auto (OpenAI → Gemini)"],["openai","OpenAI · "+prov("openai").textModel],["gemini","Gemini · "+prov("gemini").textModel]];
   return opts.map(function(o){
@@ -1229,7 +1264,7 @@ function render(){
   var app=$("#app");
   var top =
    '<header class="topbar">'+
-     '<div class="brand"><span class="logo">◆</span> OmniFormat <small class="hide-sm">AI Studio Max</small></div>'+
+     '<div class="brand"><span class="logo">◆</span> NEXUS <small class="hide-sm">AI Universal Studio</small></div>'+
      (S.me?'<span class="pill plan-'+S.me.plan+'">'+esc(S.me.planName)+'</span>'+
        '<span class="chip hide-sm" title="AI credits">✦ <b>'+S.me.credits.ai+'</b><span class="bar"><i style="width:'+barPct("ai")+'%"></i></span></span>'+
        '<span class="chip hide-sm" title="Image credits">🎨 <b>'+S.me.credits.image+'</b></span>'+
@@ -1246,7 +1281,7 @@ function render(){
   NAV.forEach(function(n){
     rail += '<button class="nav'+(S.view===n.k?" active":"")+'" data-view="'+n.k+'"><span class="ic">'+n.ic+'</span>'+n.label+'</button>';
   });
-  rail += '<div class="foot">Zero-dependency build<br>v1.0.0 · '+(S.settings&&S.settings.billingMode==="stripe"?"Stripe billing":"dev billing")+'</div></aside>';
+  rail += '<div class="foot">Nexus build<br>v0.1 Alpha · '+(S.settings&&S.settings.billingMode==="stripe"?"Stripe billing":"dev billing")+'</div></aside>';
   app.innerHTML = top + '<div class="body">'+rail+'<main><div class="view" id="view">'+viewHtml(S.view)+'</div></main></div>'+overlayHtml()+bottomNav();
   bindNav(); bindOverlay(); bindView(S.view);
 }
@@ -1269,6 +1304,7 @@ function bindNav(){
   for(var i=0;i<btns.length;i++){
     btns[i].addEventListener("click", function(){
       S.view=this.getAttribute("data-view");
+      try{ localStorage.setItem("nexus-view",S.view); localStorage.setItem("nexus-last",JSON.stringify({view:S.view,label:(this.textContent||"").trim(),at:new Date().toLocaleTimeString()})); }catch(e){}
       if(S.veoPoll){ clearInterval(S.veoPoll); S.veoPoll=null; }
       render();
     });
@@ -1278,7 +1314,7 @@ function bindNav(){
 /* ── auth card ─────────────────────────────────────────── */
 function authCard(){
   return '<div class="card authcard">'+
-    '<div class="brand" style="justify-content:center"><span class="logo">◆</span> OmniFormat <small>AI Studio Max</small></div>'+
+    '<div class="brand" style="justify-content:center"><span class="logo">◆</span> NEXUS <small>AI Universal Studio</small></div>'+
     '<h2>Welcome to the Studio</h2>'+
     '<p>Text · Image · Video generation with credit wallets and plans. Start instantly with a dev session'+
     (S.settings&&S.settings.google.enabled?', or continue with Google.':'.')+'</p>'+
@@ -1305,6 +1341,7 @@ function bindAuth(){
 
 /* ── views ─────────────────────────────────────────────── */
 function viewHtml(v){
+  if(v==="dashboard") return dashboardView();
   if(v==="chat")    return chatView();
   if(v==="doc")     return toolView("doc");
   if(v==="research")return toolView("research");
@@ -1320,6 +1357,58 @@ function genHeader(title, sub, withProvider, provSel){
     '<h1 class="vt">'+title+'<small>'+sub+'</small></h1>'+
     (withProvider?'<select id="provider" style="max-width:250px">'+providerOptions(provSel||"auto")+'</select>':"")+
     '</div>';
+}
+function dashboardView(){
+  var last=null; try{ last=JSON.parse(localStorage.getItem("nexus-last")||"null"); }catch(e){}
+  return genHeader("Dashboard","Your Nexus home — continue where you left off","")+
+    '<div class="plans">'+
+      '<div class="card plan"><div class="pname">Quick Actions</div>'+
+        '<div class="row">'+
+        '<button class="btn sm qa" data-view="chat">✦ New Chat</button>'+
+        '<button class="btn ghost sm qa" data-view="image">🎨 Generate Image</button>'+
+        '<button class="btn ghost sm qa" data-view="video">🎬 Generate Video</button>'+
+        '<button class="btn ghost sm qa" data-view="billing">💳 Upgrade</button>'+
+        '</div></div>'+
+      '<div class="card plan"><div class="pname">Continue Working</div>'+
+        '<div class="hint">'+(last?("Last studio: "+esc(last.label||last.view)+" · "+esc(last.at||"")):"No recent activity yet — pick a studio to begin.")+'</div>'+
+        (last?'<button class="btn sm qa" data-view="'+esc(last.view)+'">Resume →</button>':"")+
+      '</div>'+
+      '<div class="card plan"><div class="pname">System Status</div>'+
+        '<div class="hint" id="dash-status"></div></div>'+
+    '</div>'+
+    '<div class="card pad"><label class="fl">Analyze Screen (AI)</label>'+
+      '<div class="hint" style="margin-bottom:10px">Nexus gathers structured app context — current studio, plan, credits, provider state — and sends it to the assistant for a SUMMARY / ISSUES / SUGGESTIONS / ACTIONS report.</div>'+
+      '<button class="btn" id="analyze-run" '+(S.busy?"disabled":"")+'>Analyze Screen ✦</button>'+
+      '<div id="analyze-out" style="margin-top:12px"></div></div>';
+}
+function palCmds(){ return [
+  {t:"◈ Open Dashboard",fn:function(){ S.view="dashboard"; render(); }},
+  {t:"✦ Smart Merge (Chat)",fn:function(){ S.view="chat"; render(); }},
+  {t:"📄 Document Studio",fn:function(){ S.view="doc"; render(); }},
+  {t:"🔬 Research Desk",fn:function(){ S.view="research"; render(); }},
+  {t:"🧩 App Builder",fn:function(){ S.view="app"; render(); }},
+  {t:"🎨 Image Studio",fn:function(){ S.view="image"; render(); }},
+  {t:"🎬 Video Studio",fn:function(){ S.view="video"; render(); }},
+  {t:"⚗️ Playground",fn:function(){ S.view="play"; render(); }},
+  {t:"💳 Plans & Billing",fn:function(){ S.view="billing"; render(); }},
+  {t:"⚙ Settings",fn:function(){ var b=document.getElementById("btn-settings"); if(b) b.click(); }},
+];}
+function togglePalette(){
+  var ex=document.getElementById("pal");
+  if(ex){ ex.classList.toggle("hidden"); var inp=ex.querySelector("input"); if(inp&&!ex.classList.contains("hidden")) inp.focus(); return; }
+  var ov=document.createElement("div"); ov.id="pal"; ov.className="pal";
+  ov.innerHTML='<div class="card sheet"><input type="text" id="pal-q" placeholder="Type a command…  (Ctrl+K)"/><div id="pal-list"></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener("click",function(e){ if(e.target===ov) ov.classList.add("hidden"); });
+  var q=ov.querySelector("#pal-q"), list=ov.querySelector("#pal-list");
+  function draw(){
+    var f=(q.value||"").toLowerCase();
+    var cmds=palCmds().filter(function(c){ return !f||c.t.toLowerCase().indexOf(f)>=0; });
+    list.innerHTML=cmds.map(function(c,i){ return '<button class="cmd" data-i="'+i+'">'+esc(c.t)+'</button>'; }).join("")||'<div class="hint" style="padding:8px">No matches</div>';
+    var bs=list.querySelectorAll(".cmd");
+    for(var i=0;i<bs.length;i++){ bs[i].addEventListener("click",function(){ cmds[Number(this.getAttribute("data-i"))].fn(); ov.classList.add("hidden"); }); }
+  }
+  q.addEventListener("input",draw); draw(); q.focus();
 }
 function chatView(){
   return genHeader("Smart Merge Studio","Conversational generation with automatic provider fallback",true)+
@@ -1364,8 +1453,18 @@ function toolView(kind){
     '<div id="tool-out"></div>';
 }
 function imageView(){
-  return genHeader("Vision Lab","Text-to-image with GPT-Image-2 and Gemini Flash Image",true,"openai")+
-    '<div class="card pad"><label class="fl">Prompt</label>'+
+  return genHeader("Image Studio","Text-to-image with GPT-Image-2 and Gemini Flash Image",true,"openai")+
+    '<div class="card pad"><label class="fl">Prompt Builder</label>'+
+    '<div class="pgrid">'+
+      '<input type="text" id="img-subject" placeholder="Subject — a glass fox sculpture"/>'+
+      '<input type="text" id="img-style" placeholder="Style — cinematic, anime, watercolor"/>'+
+      '<input type="text" id="img-light" placeholder="Lighting — golden hour, neon rim"/>'+
+      '<input type="text" id="img-cam" placeholder="Camera — 85mm, macro, aerial"/>'+
+      '<input type="text" id="img-mood" placeholder="Mood — serene, ominous, playful"/>'+
+    '</div>'+
+    '<label class="fl" style="margin-top:12px">Negative prompt (things to avoid)</label>'+
+    '<input type="text" id="img-negative" placeholder="blurry, low quality, distorted hands"/>'+
+    '<label class="fl" style="margin-top:12px">Full prompt (optional, overrides builder)</label>'+
     '<textarea id="img-prompt" placeholder="A glass sculpture of a fox on a dark pedestal, cinematic rim light…"></textarea>'+
     '<div class="row" style="margin-top:12px;justify-content:space-between">'+
       '<select id="img-size" style="max-width:170px"><option value="1024x1024">1024 × 1024</option><option value="1536x1024">1536 × 1024</option><option value="1024x1536">1024 × 1536</option></select>'+
@@ -1374,16 +1473,25 @@ function imageView(){
     '<div id="img-out"></div>';
 }
 function videoView(){
-  var can=planAllowsVeo();
-  return genHeader("Veo Theater","Cinematic text-to-video via Veo 3.1 long-running operations","")+
+  var plan=currentPlan();
+  var vLim=(S.settings&&S.settings.videoLimits)||{freeMaxSeconds:120,paidMaxSeconds:300,costPerVideo:10};
+  var maxS=plan.maxVideoSeconds||vLim.freeMaxSeconds;
+  var can=S.me&&S.me.credits.veo>0;
+  var opts=[[8,"8 seconds"],[30,"30 seconds"],[60,"1 minute"],[120,"2 minutes"],[180,"3 minutes"],[240,"4 minutes"],[300,"5 minutes"]];
+  var sel='<select id="veo-dur" style="max-width:190px">'+
+    opts.map(function(o){ return '<option value="'+o[0]+'"'+(o[0]>maxS?" disabled":"")+(o[0]===8?" selected":"")+'>'+o[1]+(o[0]>maxS?"  🔒":"")+'</option>'; }).join("")+'</select>';
+  return genHeader("Video Studio","Cinematic text-to-video via Veo 3.1 long-running operations","")+
     '<div class="card pad">'+
     (can
       ?'<label class="fl">Scene prompt</label>'+
        '<textarea id="veo-prompt" placeholder="A neon koi swimming through a rainy cyberpunk alley, slow motion, reflections…"></textarea>'+
+       '<div class="row" style="margin-top:12px">'+
+        '<label class="fl" style="margin:0 6px 0 0">Duration</label>'+sel+
+        '<span class="hint">'+esc(plan.videoLabel||("up to "+Math.round(maxS/60)+" min"))+' · '+vLim.costPerVideo+' Veo credits per video</span></div>'+
        '<div class="row" style="margin-top:12px;justify-content:flex-end">'+
-        '<button class="btn" id="veo-run" '+(S.busy?"disabled":"")+'>Generate 🎬 · 10 Veo credits</button></div>'+
-       '<div class="hint" style="margin-top:8px">Veo runs asynchronously — keep this tab open and we will poll the operation for you.</div>'
-      :'<div class="err">Veo video generation is not part of the Free plan. <b>Upgrade to Go, Pro or VIP</b> in the Billing tab to unlock it.</div>')+
+        '<button class="btn" id="veo-run" '+(S.busy?"disabled":"")+'>Generate 🎬</button></div>'+
+       '<div class="hint" style="margin-top:8px">Veo runs asynchronously — keep this tab open and we will poll the operation for you. Longer durations take longer to render.</div>'
+      :'<div class="err">You are out of Veo credits on the '+esc(S.me.planName||"Free")+' plan. <b>Upgrade to Go, Pro or VIP</b> in Billing for up to 5 minute videos.</div>')+
     '</div><div id="veo-out"></div>';
 }
 function playgroundView(){
@@ -1417,10 +1525,13 @@ function billingView(){
     (stripe?'<div class="oknote">Stripe billing is active — upgrades open a secure Stripe Checkout.</div>'
            :'<div class="hint">Running in dev billing simulation: upgrades apply instantly and cost nothing. Add STRIPE_SECRET_KEY to switch to real Stripe Checkout.</div>')+
     '<div class="plans">'+cards+'</div>'+
-    (S.settings&&S.settings.vipCodeEnabled
-      ?'<div class="card pad"><label class="fl">Have a VIP access code?</label><div class="row">'+
-       '<input type="password" id="vip-code" placeholder="Access code" style="max-width:240px"/>'+
-       '<button class="btn ghost sm" id="vip-unlock">Unlock VIP</button></div></div>' :"")+
+    (S.settings&&S.settings.accessCodeEnabled
+      ?'<div class="card pad"><label class="fl">Have an access code?</label>'+
+       '<div class="hint" style="margin-bottom:10px">Enter the code you received to unlock Go, Pro or VIP instantly — credits top up to the chosen plan.</div>'+
+       '<div class="row">'+
+       '<select id="access-plan" style="max-width:160px"><option value="go">Go</option><option value="pro" selected>Pro</option><option value="vip">VIP</option></select>'+
+       '<input type="password" id="access-code" placeholder="Access code" style="max-width:220px"/>'+
+       '<button class="btn sm" id="access-unlock">Unlock</button></div></div>' :"")+
     '<div class="card pad"><h1 class="vt" style="font-size:16px">Usage this month</h1><div class="stats" style="margin-top:10px">'+
       '<div class="stat"><b>'+S.me.used.ai+'</b><span>AI calls</span></div>'+
       '<div class="stat"><b>'+S.me.used.image+'</b><span>Images</span></div>'+
@@ -1475,7 +1586,8 @@ function sendChat(){
   S.thread.push({role:"user",text:text}); S.busy=true;
   inp.value=""; render();
   var provider=($("#provider")&&$("#provider").value)||"auto";
-  var convo=S.thread.map(function(m){return (m.role==="user"?"User: ":"Assistant: ")+m.text;}).join("\\n");
+  var ctx=(S.me?("Workspace context: studio="+S.view+", plan="+S.me.planName+", credits(AI/image/video)="+S.me.credits.ai+"/"+S.me.credits.image+"/"+S.me.credits.veo+"."):"");
+  var convo=(ctx?ctx+"\\n":"")+S.thread.map(function(m){return (m.role==="user"?"User: ":"Assistant: ")+m.text;}).join("\\n");
   api("/api/generate",{method:"POST",body:JSON.stringify({provider:provider,prompt:convo})})
     .then(function(r){
       S.thread.push({role:"ai",text:r.text,provider:r.provider,model:r.model});
@@ -1516,8 +1628,18 @@ function runTool(kind){
     .catch(function(e){ S.busy=false; render(); toast(e.message,true); });
 }
 function runImage(){
-  var prompt=($("#img-prompt").value||"").trim();
-  if(!prompt){ toast("Describe the image first",true); return; }
+  var b={subject:$("#img-subject"),style:$("#img-style"),light:$("#img-light"),cam:$("#img-cam"),mood:$("#img-mood")};
+  var segs=[];
+  if(b.subject&&b.subject.value.trim()) segs.push(b.subject.value.trim());
+  if(b.style&&b.style.value.trim()) segs.push("style: "+b.style.value.trim());
+  if(b.light&&b.light.value.trim()) segs.push("lighting: "+b.light.value.trim());
+  if(b.cam&&b.cam.value.trim()) segs.push("camera: "+b.cam.value.trim());
+  if(b.mood&&b.mood.value.trim()) segs.push("mood: "+b.mood.value.trim());
+  var manual=($("#img-prompt").value||"").trim();
+  var prompt=segs.length?(segs.join(", ")+(manual?" — "+manual:"")):manual;
+  if(!prompt){ toast("Describe the image first (builder or full prompt)",true); return; }
+  var neg=($("#img-negative").value||"").trim();
+  if(neg) prompt+="\\n\\nAvoid: "+neg;
   var provider=($("#provider").value)||"openai";
   if(!planAllowsProvider(provider)){ toast("Your plan does not include "+provider+" images",true); return; }
   var size=($("#img-size").value)||"1024x1024";
@@ -1530,17 +1652,19 @@ function runImage(){
       out.innerHTML='<div class="card pad"><div class="imgwrap"><img alt="Generated" src="'+r.dataUrl+'"/></div>'+
         '<div class="row" style="margin-top:10px;justify-content:space-between">'+
         '<span class="hint">'+providerTag(r.provider)+' · '+esc(r.model||"")+'</span>'+
-        '<a class="btn ghost sm" href="'+r.dataUrl+'" download="omniformat-image.png">Download ⬇</a></div></div>';
+        '<a class="btn ghost sm" href="'+r.dataUrl+'" download="nexus-image.png">Download ⬇</a></div></div>';
     })
     .catch(function(e){ S.busy=false; render(); toast(e.message,true); });
 }
 function runVeo(){
   var prompt=($("#veo-prompt").value||"").trim();
   if(!prompt){ toast("Describe the scene first",true); return; }
-  if(!planAllowsVeo()){ toast("Upgrade to unlock Veo",true); return; }
+  var secs=($("#veo-dur")?Number($("#veo-dur").value):8)||8;
+  if(!S.me.credits.veo){ toast("No Veo credits left — upgrade in Billing",true); return; }
+  if(secs>(currentPlan().maxVideoSeconds||120)){ toast("Your plan allows up to "+Math.round(currentPlan().maxVideoSeconds/60)+" minute videos — upgrade for longer",true); return; }
   S.busy=true; render();
   var out=$("#veo-out"); out.innerHTML='<div class="card pad hint">Submitting to Veo…</div>';
-  api("/api/veo/generate",{method:"POST",body:JSON.stringify({prompt:prompt,seconds:8})})
+  api("/api/veo/generate",{method:"POST",body:JSON.stringify({prompt:prompt,seconds:secs})})
     .then(function(r){
       S.busy=false; S.me.credits=r.credits; render();
       out=$("#veo-out");
@@ -1568,6 +1692,25 @@ function pollVeo(id){
   }).catch(function(e){ if(S.veoPoll){clearInterval(S.veoPoll);S.veoPoll=null;} toast(e.message,true); });
 }
 function bindView(v){
+  if(v==="dashboard"){
+    var st=document.getElementById("dash-status");
+    if(st) st.textContent="OpenAI "+(prov("openai").configured?"● connected":"○ not configured")+" · Gemini "+(prov("gemini").configured?"● connected":"○ not configured")+" · Veo "+(prov("veo").configured?"● connected":"○ not configured")+" · billing "+((S.settings&&S.settings.billingMode)||"dev");
+    var qs=document.querySelectorAll(".qa");
+    for(var qi=0;qi<qs.length;qi++){ qs[qi].addEventListener("click",function(){
+      S.view=this.getAttribute("data-view");
+      try{ localStorage.setItem("nexus-view",S.view); }catch(e){}
+      render();
+    }); }
+    var ar=document.getElementById("analyze-run");
+    if(ar) ar.addEventListener("click",function(){
+      var out=document.getElementById("analyze-out");
+      out.innerHTML='<div class="hint">Analyzing…</div>';
+      var p="Analyze this workspace snapshot and reply with SUMMARY, ISSUES, SUGGESTIONS, ACTIONS. Context: studio="+S.view+"; plan="+(S.me&&S.me.planName)+"; credits="+(S.me?JSON.stringify(S.me.credits):"n/a")+"; providers openai="+(prov("openai").configured?"on":"off")+", gemini="+(prov("gemini").configured?"on":"off")+", veo="+(prov("veo").configured?"on":"off")+".";
+      api("/api/generate",{method:"POST",body:JSON.stringify({provider:"auto",prompt:p})})
+        .then(function(r){ out.innerHTML='<div class="output">'+esc(r.text)+'</div>'; })
+        .catch(function(e){ out.innerHTML='<div class="err">'+esc(e.message)+'</div>'; });
+    });
+  }
   if(v==="chat"){
     var send=$("#chat-send"); if(send) send.addEventListener("click",sendChat);
     var inp=$("#chat-in"); if(inp) inp.addEventListener("keydown",function(e){
@@ -1605,9 +1748,9 @@ function bindView(v){
       api("/api/checkout",{method:"POST",body:JSON.stringify({plan:"free"})}).catch(function(){}); // free is rejected; kept for clarity
       toast("Use Sign out to start a fresh Free session");
     });
-    var vu=$("#vip-unlock"); if(vu) vu.addEventListener("click",function(){
-      api("/api/dev/unlock-vip",{method:"POST",body:JSON.stringify({code:($("#vip-code").value||"")})})
-        .then(function(r){ S.me=r.user; toast("VIP unlocked 👑"); render(); })
+    var au=$("#access-unlock"); if(au) au.addEventListener("click",function(){
+      api("/api/access/unlock",{method:"POST",body:JSON.stringify({code:($("#access-code").value||""),plan:($("#access-plan").value||"pro")})})
+        .then(function(r){ S.me=r.user; toast("Unlocked "+String(r.plan).toUpperCase()+" 🔓"); render(); })
         .catch(function(e){ toast(e.message,true); });
     });
   }
@@ -1615,6 +1758,8 @@ function bindView(v){
 
 /* ── boot ──────────────────────────────────────────────── */
 function loadMe(){ return api("/api/me").then(function(me){ S.me=me; render(); }).catch(function(){ S.me=null; render(); }); }
+try{ var sv=localStorage.getItem("nexus-view"); if(sv){ S.view=sv; } }catch(e){}
+document.addEventListener("keydown",function(e){ if((e.ctrlKey||e.metaKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); togglePalette(); } });
 api("/api/settings").then(function(s){ S.settings=s; render(); }).catch(function(){
   S.settings={plans:[],providers:{openai:{},gemini:{},veo:{}},devAuth:true,devBilling:true,billingMode:"dev"}; render();
 });
