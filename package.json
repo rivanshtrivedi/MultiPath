@@ -1,0 +1,25 @@
+{
+  "name": "omniformat-ai-studio-max",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OmniFormat AI Studio Max — zero-dependency full-stack AI studio (OpenAI, Gemini, Veo) with plans, credit wallets, billing and a glassmorphism UI.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/smoke.mjs"
+  },
+  "keywords": [
+    "ai",
+    "openai",
+    "gemini",
+    "veo",
+    "studio",
+    "zero-dependency"
+  ],
+  "license": "MIT"
+}
