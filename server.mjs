@@ -304,6 +304,51 @@ function deepFindUri(obj, depth = 0) {
   return null;
 }
 
+/* ══════════════════════════ 5b. Provider issue tracking ═══════════════ */
+
+/**
+ * Last failure per provider/capability, surfaced in the Billing view as a hint
+ * card so users can tell billing/quota problems apart from app bugs. Values are
+ * redacted (no keys, no emails) and capped; purely informational.
+ */
+const providerIssues = new Map(); // id → { provider, capability, kind, status, message, at }
+const PROVIDER_ISSUE_MESSAGE_MAX = 500;
+
+function recordProviderIssue(provider, capability, err) {
+  try {
+    const message = String(err?.message || err || "Unknown provider error.").slice(0, PROVIDER_ISSUE_MESSAGE_MAX);
+    const lower = message.toLowerCase();
+    let kind = "error";
+    if (err?.code === "insufficient_credits" || /no credits remaining|insufficient_quota|billing|exceeded your current quota|limit: 0|resource_exhausted/.test(lower)) {
+      kind = "billing";
+    } else if (/quota/i.test(lower)) {
+      kind = "quota";
+    } else if (/invalid api key|unauthenticated|api key not valid|permission denied|401|403/.test(lower)) {
+      kind = "auth";
+    }
+    const status = typeof err?.status === "number" ? err.status : null;
+    providerIssues.set(provider + ":" + capability, {
+      provider,
+      capability,
+      kind,
+      status,
+      message,
+      at: new Date().toISOString(),
+    });
+  } catch {
+    /* never let issue tracking break a request */
+  }
+}
+
+function clearProviderIssue(provider, capability) {
+  providerIssues.delete(provider + ":" + capability);
+}
+
+/** Sorted list for publicSettings(). */
+function listProviderIssues() {
+  return [...providerIssues.values()].sort((a, b) => (a.provider + a.capability).localeCompare(b.provider + b.capability));
+}
+
 /* ══════════════════════════ 6. AI providers ════════════════════════════ */
 
 function providerConfigured(provider) {
@@ -374,6 +419,7 @@ async function generateText({ provider, prompt, system, plan, maxOutput }) {
         ? await openaiText({ prompt, system, maxOutput: cap })
         : await geminiText({ prompt, system, maxOutput: cap });
     } catch (err) {
+      recordProviderIssue(p, "text", err);
       lastErr = err;
     }
   }
@@ -627,6 +673,7 @@ function publicSettings(origin) {
       gemini: { configured: Boolean(GEMINI_API_KEY), textModel: GEMINI_TEXT_MODEL, imageModel: GEMINI_IMAGE_MODEL },
       veo: { configured: Boolean(GEMINI_API_KEY), model: VEO_MODEL, cost: VEO_CREDIT_COST },
     },
+    providerIssues: listProviderIssues(),
     plans: Object.values(PLANS).map((p) => ({
       key: p.key, name: p.name, price: p.price, tagline: p.tagline, features: p.features,
       wallet: p.wallet, maxVideoSeconds: p.maxVideoSeconds, videoLabel: p.videoLabel,
@@ -640,7 +687,7 @@ async function handleApi(req, res, pathname, query, origin) {
 
   /* ---- public ---- */
   if (method === "GET" && pathname === "/api/health") {
-    return sendJSON(res, 200, { ok: true, app: "omniformat-ai-studio-max", time: new Date().toISOString() });
+    return sendJSON(res, 200, { ok: true, app: "nexus-ai-universal-studio", time: new Date().toISOString() });
   }
   if (method === "GET" && pathname === "/api/settings") {
     return sendJSON(res, 200, publicSettings(origin));
@@ -806,6 +853,7 @@ async function handleApi(req, res, pathname, query, origin) {
       const result = provider === "openai"
         ? await openaiImage({ prompt, size })
         : await geminiImage({ prompt });
+      clearProviderIssue(provider, "image");
       const u = ensureUsage(user.email);
       u.calls.image += 1;
       return sendJSON(res, 200, {
@@ -814,6 +862,7 @@ async function handleApi(req, res, pathname, query, origin) {
       });
     } catch (err) {
       refundCredit(user.email, "image", 1);
+      if (err.code !== "insufficient_credits") recordProviderIssue(provider, "image", err);
       const status = err.code === "insufficient_credits" ? 402 : 502;
       return sendError(res, status, err.message || "Image generation failed.", err.code);
     }
@@ -835,6 +884,7 @@ async function handleApi(req, res, pathname, query, origin) {
     spendCredit(user.email, "veo", VEO_CREDIT_COST);
     try {
       const opName = await veoStart({ prompt, seconds });
+      clearProviderIssue("veo", "video");
       const localId = "veo_" + crypto.randomBytes(8).toString("hex");
       veoOps.set(localId, {
         opName, email: user.email, prompt, status: "running",
@@ -845,6 +895,7 @@ async function handleApi(req, res, pathname, query, origin) {
       return sendJSON(res, 200, { ok: true, id: localId, status: "running", cost: 10, credits: u.credits });
     } catch (err) {
       refundCredit(user.email, "veo", 10);
+      if (err.code !== "insufficient_credits") recordProviderIssue("veo", "video", err);
       const status = err.code === "insufficient_credits" ? 402 : 502;
       return sendError(res, status, err.message || "Veo submission failed.", err.code);
     }
@@ -869,6 +920,7 @@ async function handleApi(req, res, pathname, query, origin) {
       } catch (err) {
         op.status = "failed";
         op.error = err.message;
+        recordProviderIssue("veo", "video", err);
         refundCredit(user.email, "veo", 10);
       }
     }
@@ -1504,6 +1556,29 @@ function playgroundView(){
     '<button class="btn sm" id="pg-run">Run ▶</button></div>'+
     '<div style="margin-top:12px"><iframe id="pg-frame" sandbox="allow-scripts" title="Sandbox preview"></iframe></div></div>';
 }
+function providerIssueHintHtml(){
+  var issues=(S.settings&&Array.isArray(S.settings.providerIssues))?S.settings.providerIssues:[];
+  var unconfigured=[];
+  if(S.me){
+    if(!prov("openai").configured) unconfigured.push("OpenAI (OPENAI_API_KEY)");
+    if(!prov("gemini").configured) unconfigured.push("Gemini (GEMINI_API_KEY)");
+  }
+  if(!issues.length&&!unconfigured.length) return "";
+  var items=[];
+  for(var i=0;i<unconfigured.length;i++){
+    items.push('<div style="margin-top:8px"><b>'+esc(unconfigured[i])+' not configured</b><div class="hint">Add the API key and restart — then run a generation to see live provider status here.</div></div>');
+  }
+  issues.forEach(function(iss){
+    if(/not configured/i.test(iss.message||"")) return;
+    var label=String(iss.provider||"").toUpperCase()+" · "+iss.capability;
+    items.push('<div style="margin-top:8px"><b>'+esc(label)+'</b> <span class="badge">'+esc(iss.kind||"error")+'</span>'+
+      '<div class="err">'+esc(iss.message||"")+'</div>'+
+      '<div class="hint">Last seen '+esc(String(iss.at||"").replace("T"," ").slice(0,19))+' UTC'+(iss.status?' · HTTP '+esc(String(iss.status)):'')+'</div></div>');
+  });
+  return '<div class="card pad" id="provider-issues"><h1 class="vt" style="font-size:16px">⚠️ Provider issues</h1>'+
+    '<div class="hint">The exact errors each provider returned — usually billing or quota on your API account, not app bugs.</div>'+
+    items.join("")+'</div>';
+}
 function billingView(){
   var plans=S.settings?S.settings.plans:[];
   var stripe=S.settings&&S.settings.billingMode==="stripe";
@@ -1525,6 +1600,7 @@ function billingView(){
     (stripe?'<div class="oknote">Stripe billing is active — upgrades open a secure Stripe Checkout.</div>'
            :'<div class="hint">Running in dev billing simulation: upgrades apply instantly and cost nothing. Add STRIPE_SECRET_KEY to switch to real Stripe Checkout.</div>')+
     '<div class="plans">'+cards+'</div>'+
+    providerIssueHintHtml()+
     (S.settings&&S.settings.accessCodeEnabled
       ?'<div class="card pad"><label class="fl">Have an access code?</label>'+
        '<div class="hint" style="margin-bottom:10px">Enter the code you received to unlock Go, Pro or VIP instantly — credits top up to the chosen plan.</div>'+

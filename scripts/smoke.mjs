@@ -144,6 +144,10 @@ async function main() {
         settingsBody?.videoLimits?.costPerVideo === 10,
     );
     check("accessCodeEnabled exposed", settingsBody?.accessCodeEnabled === true);
+    check(
+      "settings exposes providerIssues array",
+      Array.isArray(settingsBody?.providerIssues),
+    );
 
     // ── Session bootstrap ────────────────────────────────────────────────
     const boot = await fetch(`${BASE}/api/auth/session`, { method: "POST" });
@@ -197,6 +201,14 @@ async function main() {
     check(
       "Free 60s video graceful provider failure (502/no-key)",
       veoFreeOk.res.ok || veoFreeOk.res.status === 502,
+    );
+
+    const settingsAfterVeo = await (await fetch(`${BASE}/api/settings`)).json();
+    check(
+      "veo no-key failure captured as provider issue",
+      (settingsAfterVeo?.providerIssues ?? []).some(
+        (i) => i.provider === "veo" && i.capability === "video",
+      ),
     );
 
     const veoFreeOver = await gate(
