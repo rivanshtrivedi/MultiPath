@@ -1,8 +1,7 @@
-build/
-*.class
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+node_modules/
+dist/
+.data/
+.env
+.env.local
 *.log
-out/
+.DS_Store
